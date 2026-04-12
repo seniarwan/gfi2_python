@@ -1,0 +1,14 @@
+# GFI v2.0 — Python dependencies
+# Install: pip install -r requirements.txt
+
+# Core (wajib)
+numpy>=1.23
+rasterio>=1.3
+scipy>=1.9
+numba>=0.57
+joblib>=1.2
+matplotlib>=3.6
+
+# Opsional: hanya diperlukan untuk MODE A (preprocessing otomatis dari DEM mentah)
+# Jika sudah punya flow dir & acc dari QGIS/ArcGIS → tidak perlu install pysheds
+pysheds>=0.3

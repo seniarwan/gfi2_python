@@ -1,0 +1,58 @@
+[build-system]
+requires      = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name        = "gfi2"
+version     = "2.0.0"
+description = "Geomorphic Flood Index v2.0 — Python port"
+readme      = "README.md"
+license     = { text = "CC BY 4.0" }
+requires-python = ">=3.9"
+
+authors = [
+    { name = "Jorge Saavedra Navarro" },
+    { name = "Cinzia Albertini" },
+    { name = "Caterina Samela" },
+    { name = "Salvatore Manfreda" },
+]
+
+keywords = ["flood", "GFI", "geomorphology", "DEM", "hydrology", "remote sensing"]
+
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Hydrology",
+    "Intended Audience :: Science/Research",
+]
+
+dependencies = [
+    "numpy>=1.23",
+    "rasterio>=1.3",
+    "scipy>=1.9",
+    "numba>=0.57",
+    "joblib>=1.2",
+    "matplotlib>=3.6",
+]
+
+[project.optional-dependencies]
+auto = ["pysheds>=0.3"]          # MODE A: preprocessing otomatis dari DEM mentah
+dev  = ["pytest>=7.0", "pytest-cov>=4.0"]
+
+[project.urls]
+"Source Code" = "https://github.com/YOUR_USERNAME/gfi2-python"
+"Original MATLAB (Zenodo)" = "https://doi.org/10.5281/zenodo.18903835"
+"Bug Tracker" = "https://github.com/YOUR_USERNAME/gfi2-python/issues"
+
+[tool.pytest.ini_options]
+testpaths    = ["tests"]
+python_files = ["test_*.py"]
+python_funcs = ["test_*"]
+addopts      = "-v --tb=short"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gfi2*"]
