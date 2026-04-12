@@ -20,7 +20,7 @@ GFI = ln(hr / H)
 - `a`  = koefisien dikalibrasi via ROC terhadap peta banjir referensi  
 - `n`  = 0.354429752 (rata-rata literatur, Samela et al. 2018)
 
-**GFI 2.0** menambahkan iterasi backwater confluence: segmen sungai yang berdekatan dengan confluence menginherit properti hidrologi dari sungai utama downstream, menghasilkan estimasi kedalaman banjir yang lebih akurat.
+**GFI 2.0** menambahkan iterasi backwater confluence: segmen sungai yang berdekatan dengan confluence mewarisi (inherit) properti hidrologi dari sungai utama downstream, menghasilkan estimasi kedalaman banjir yang lebih akurat.
 
 ## Struktur Repo
 
