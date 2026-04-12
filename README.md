@@ -1,4 +1,4 @@
-# Geomorphic Flood Index (GFI) v2.0 — Python
+# GFI v2.0 — Python
 
 Port Python dari toolbox MATLAB GFI v2.0 oleh Saavedra Navarro et al.
 
