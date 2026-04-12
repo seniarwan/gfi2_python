@@ -41,8 +41,6 @@ gfi2-python/
 │   └── GFI2_Colab.ipynb    ← Notebook siap pakai di Google Colab
 ├── data/
 │   └── example/            ← Contoh data kecil (opsional)
-├── tests/
-│   └── test_gfi2.py        ← Unit test
 ├── requirements.txt
 ├── setup.py
 └── README.md
