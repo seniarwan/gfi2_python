@@ -50,7 +50,7 @@ gfi2-python/
 
 ```bash
 # Clone repo
-git clone https://github.com/YOUR_USERNAME/gfi2-python.git
+git clone https://github.com/seniarwan/gfi2-python.git
 cd gfi2-python
 
 # Install dependencies
