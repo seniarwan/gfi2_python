@@ -7,7 +7,7 @@ setup(
     long_description = open("README.md").read(),
     long_description_content_type = "text/markdown",
     author  = "Jorge Saavedra Navarro, Cinzia Albertini, Caterina Samela, Salvatore Manfreda",
-    url     = "https://github.com/YOUR_USERNAME/gfi2-python",
+    url     = "https://github.com/seniarwan/gfi2_python",
     license = "CC BY 4.0",
     packages = find_packages(),
     python_requires  = ">=3.9",
