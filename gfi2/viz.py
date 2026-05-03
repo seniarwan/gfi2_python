@@ -203,3 +203,134 @@ def plot_water_depth_analysis(
         plt.close()
     print(f"  Tersimpan: {path}")
     return path
+
+
+# ---------------------------------------------------------------------------
+def plot_gfi_maps(
+    GFIv1:         np.ndarray,
+    GFIv2:         np.ndarray,
+    flood_prone_v1: np.ndarray,
+    flood_prone_v2: np.ndarray,
+    params_v1:     dict,
+    params_v2:     dict,
+    out_dir:       str  = ".",
+    show:          bool = True,
+) -> str:
+    """
+    Plot peta GFI v1.0, GFI v2.0, dan flood-prone area keduanya.
+    Tersedia di semua mode kalibrasi (roc maupun manual).
+    """
+    import matplotlib
+    matplotlib.use("Agg")   # non-interactive backend — aman di Colab
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    vmin = min(float(np.nanpercentile(GFIv1, 2)),
+               float(np.nanpercentile(GFIv2, 2)))
+    vmax = max(float(np.nanpercentile(GFIv1, 98)),
+               float(np.nanpercentile(GFIv2, 98)))
+
+    # GFI v1.0
+    im1 = axes[0, 0].imshow(GFIv1, cmap="RdYlBu", vmin=vmin, vmax=vmax)
+    plt.colorbar(im1, ax=axes[0, 0], label="GFI", shrink=0.8)
+    axes[0, 0].set_title(
+        f"GFI v1.0\nτ = {params_v1['tau_real']:.3f}  |  "
+        f"a = {params_v1['a_coeff']:.4f}"
+    )
+    axes[0, 0].axis("off")
+
+    # GFI v2.0
+    im2 = axes[0, 1].imshow(GFIv2, cmap="RdYlBu", vmin=vmin, vmax=vmax)
+    plt.colorbar(im2, ax=axes[0, 1], label="GFI", shrink=0.8)
+    axes[0, 1].set_title(
+        f"GFI v2.0  (confluence backwater)\nτ = {params_v2['tau_real']:.3f}  |  "
+        f"a = {params_v2['a_coeff']:.4f}"
+    )
+    axes[0, 1].axis("off")
+
+    # Flood-prone v1.0
+    axes[1, 0].imshow(flood_prone_v1.astype(float),
+                      cmap="Blues", vmin=0, vmax=1)
+    n1 = int(flood_prone_v1.sum())
+    pct1 = 100 * n1 / max(int(~np.isnan(GFIv1).sum()), 1)
+    axes[1, 0].set_title(f"Flood-prone v1.0\n{n1:,} sel  ({pct1:.1f}% DEM)")
+    axes[1, 0].axis("off")
+
+    # Flood-prone v2.0
+    axes[1, 1].imshow(flood_prone_v2.astype(float),
+                      cmap="Blues", vmin=0, vmax=1)
+    n2  = int(flood_prone_v2.sum())
+    pct2 = 100 * n2 / max(int(~np.isnan(GFIv2).sum()), 1)
+    axes[1, 1].set_title(f"Flood-prone v2.0  (confluence backwater)\n"
+                         f"{n2:,} sel  ({pct2:.1f}% DEM)")
+    axes[1, 1].axis("off")
+
+    plt.suptitle("Peta GFI dan Area Rawan Banjir", fontsize=13, y=1.01)
+    plt.tight_layout()
+    path = os.path.join(out_dir, "GFI_maps.png")
+    plt.savefig(path, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    else:
+        plt.close()
+    print(f"  Tersimpan: {path}")
+    return path
+
+
+# ---------------------------------------------------------------------------
+def plot_water_depth_maps(
+    WDv1:    np.ndarray,
+    WDv2:    np.ndarray,
+    out_dir: str  = ".",
+    show:    bool = True,
+) -> str:
+    """
+    Plot peta water depth v1.0, v2.0, dan selisihnya.
+    Tersedia di semua mode kalibrasi.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+    wmax = float(np.nanpercentile(
+        np.concatenate([WDv1[~np.isnan(WDv1)],
+                        WDv2[~np.isnan(WDv2)]]), 98
+    ))
+
+    im1 = axes[0].imshow(WDv1, cmap="Blues", vmin=0, vmax=wmax)
+    plt.colorbar(im1, ax=axes[0], label="WD [m]", shrink=0.8)
+    axes[0].set_title(
+        f"Water Depth v1.0\nMean = {float(np.nanmean(WDv1)):.2f} m  |  "
+        f"Max = {float(np.nanmax(WDv1)):.2f} m"
+    )
+    axes[0].axis("off")
+
+    im2 = axes[1].imshow(WDv2, cmap="Blues", vmin=0, vmax=wmax)
+    plt.colorbar(im2, ax=axes[1], label="WD [m]", shrink=0.8)
+    axes[1].set_title(
+        f"Water Depth v2.0\nMean = {float(np.nanmean(WDv2)):.2f} m  |  "
+        f"Max = {float(np.nanmax(WDv2)):.2f} m"
+    )
+    axes[1].axis("off")
+
+    diff = WDv2 - WDv1
+    lim  = float(np.nanpercentile(np.abs(diff[~np.isnan(diff)]), 98))
+    lim  = max(lim, 0.01)
+    im3  = axes[2].imshow(diff, cmap="bwr", vmin=-lim, vmax=lim)
+    plt.colorbar(im3, ax=axes[2], label="ΔWD [m]", shrink=0.8)
+    axes[2].set_title(
+        f"Selisih WD (v2.0 − v1.0)\nPositif = v2.0 lebih dalam"
+    )
+    axes[2].axis("off")
+
+    plt.suptitle("Peta Kedalaman Banjir", fontsize=13, y=1.01)
+    plt.tight_layout()
+    path = os.path.join(out_dir, "WaterDepth_maps.png")
+    plt.savefig(path, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    else:
+        plt.close()
+    print(f"  Tersimpan: {path}")
+    return path
