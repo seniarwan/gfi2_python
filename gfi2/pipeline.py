@@ -39,6 +39,7 @@ def run_gfi2(
 
     # ── Parameter ─────────────────────────────────────────────────────────
     channel_threshold: int   = 1000,
+    flow_dir_encoding: str   = "esri",   # 'esri' atau 'taudem'
     n_exponent:        float = 0.354429752,
     roc_step:          float = 0.005,
     max_iter:          int   = 6,
@@ -70,6 +71,9 @@ def run_gfi2(
     flood_depth_path : str
         Peta kedalaman banjir simulasi [m]. Digunakan untuk validasi WD.
 
+    flow_dir_encoding : str
+        Encoding flow direction: 'esri' (default, dari ArcGIS/WhiteboxTools/pysheds)
+        atau 'taudem' (dari notebook Manfreda, dirmap=(3,2,1,8,7,6,5,4)).
     channel_threshold : int
         Jumlah sel upstream minimum agar piksel dianggap channel.
         Panduan: DAS kecil (<100 km²) → 200–500,
@@ -157,14 +161,17 @@ def run_gfi2(
     channel, S_matrix, max_order = extract_channel_network(
         flow_acc, flow_dir, demcon, cellsize,
         threshold=channel_threshold,
+        encoding=flow_dir_encoding,
     )
 
     # ── 3. Flow tracing Part 1 & 2 ───────────────────────────────────────
-    _, ROW_channel, COL_channel = hillslope_to_river_mapping(
-        demcon, flow_dir, channel, cellsize, n_jobs=n_jobs,
+    ROW_channel, COL_channel = hillslope_to_river_mapping(
+        demcon, flow_dir, channel, flow_acc, cellsize,
+        encoding=flow_dir_encoding, n_jobs=n_jobs,
     )
-    _, ROW_confluence, COL_confluence = river_to_confluence_mapping(
-        flow_dir, channel, S_matrix, max_order, cellsize, n_jobs=n_jobs,
+    ROW_confluence, COL_confluence = river_to_confluence_mapping(
+        flow_dir, channel, S_matrix, max_order, cellsize,
+        encoding=flow_dir_encoding, n_jobs=n_jobs,
     )
 
     # ── 4. GFI v1.0 ───────────────────────────────────────────────────────
