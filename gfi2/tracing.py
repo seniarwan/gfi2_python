@@ -2,235 +2,195 @@
 gfi2.tracing
 ------------
 D8 flow tracing untuk dua tujuan:
-  Part 1 — Hillslope → channel terdekat   (setara MATLAB parfor Part 1)
-  Part 2 — Channel   → confluence berikutnya (setara MATLAB parfor Part 2)
+  Part 1 — Hillslope → channel terdekat
+  Part 2 — Channel   → confluence berikutnya (Strahler order berubah)
 
-Fungsi trace_flow_step() dikompilasi dengan Numba (@njit) agar performanya
-mendekati kecepatan C, menggantikan loop pixel-per-pixel MATLAB.
-Paralelisasi baris menggunakan joblib (pengganti parfor).
+Algoritma mengikuti notebook GFI v1.0 resmi (tim Manfreda, Cell 9 & 11):
+  - Setiap piksel mengikuti flow path sampai mencapai channel
+  - PATH CACHING: piksel yang sudah dikunjungi di-cache sehingga
+    piksel lain yang melewati jalur yang sama langsung ambil nilai
+    tanpa trace ulang dari awal → jauh lebih cepat dari loop biasa
+
+Encoding Flow Direction yang didukung:
+  - 'esri'    : 1=E, 2=SE, 4=S, 8=SW, 16=W, 32=NW, 64=N,  128=NE
+  - 'taudem' : 1=E, 2=NE, 3=N, 4=NW,  5=W,  6=SW,  7=S,   8=SE
+    (identik dengan encoding notebook Manfreda: dirmap=(3,2,1,8,7,6,5,4))
 """
 
 import numpy as np
-from numba import njit
-from joblib import Parallel, delayed
 import time
 
 
 # ---------------------------------------------------------------------------
-# CORE: satu langkah tracing D8  (Numba-compiled)
-# Setara MATLAB: traceFlow.m
+# Lookup tables: nilai flow direction → (drow, dcol)
 # ---------------------------------------------------------------------------
 
-@njit
-def trace_flow_step(
-    flow_dir: np.ndarray,
-    x: int,
-    y: int,
-    Ld: float,
-    cellsize: float,
-):
-    """
-    Satu langkah D8 flow tracing (Numba JIT-compiled).
-    Setara MATLAB traceFlow.m, termasuk deteksi 2-cell loop (sinkhole/flat).
+_ESRI_DR = {1: 0,  2:  1, 4:  1, 8:  1, 16: 0, 32: -1, 64: -1, 128: -1}
+_ESRI_DC = {1: 1,  2:  1, 4:  0, 8: -1, 16:-1, 32: -1, 64:  0, 128:  1}
 
-    Parameters
-    ----------
-    flow_dir : 2D np.ndarray — Flow Direction ESRI D8
-    x        : int           — baris saat ini (0-based)
-    y        : int           — kolom saat ini (0-based)
-    Ld       : float         — jarak kumulatif [m]
-    cellsize : float         — ukuran piksel [m]
+_PYSH_DR = {1: 0,  2: -1, 3: -1, 4: -1,  5: 0,  6:  1,  7:  1,   8:  1}
+_PYSH_DC = {1: 1,  2:  1, 3:  0, 4: -1,  5:-1,  6: -1,  7:  0,   8:  1}
 
-    Returns
-    -------
-    (x_baru, y_baru, Ld_baru) — semua NaN jika loop atau arah tidak valid
-    """
-    fd = int(flow_dir[x, y])
 
-    # Lookup: direction → (drow, dcol, faktor jarak)
-    if   fd == 1:   dr, dc, df =  0,  1, 1.0
-    elif fd == 128: dr, dc, df = -1,  1, 1.41421356
-    elif fd == 64:  dr, dc, df = -1,  0, 1.0
-    elif fd == 32:  dr, dc, df = -1, -1, 1.41421356
-    elif fd == 16:  dr, dc, df =  0, -1, 1.0
-    elif fd == 8:   dr, dc, df =  1, -1, 1.41421356
-    elif fd == 4:   dr, dc, df =  1,  0, 1.0
-    elif fd == 2:   dr, dc, df =  1,  1, 1.41421356
+def _get_lookup(encoding: str):
+    enc = encoding.lower()
+    if enc == "esri":
+        return _ESRI_DR, _ESRI_DC
+    elif enc in ("taudem", "manfreda"):
+        return _PYSH_DR, _PYSH_DC
     else:
-        return np.nan, np.nan, np.nan   # arah tidak valid
+        raise ValueError(
+            f"Encoding '{encoding}' tidak dikenal. Gunakan 'esri' atau 'taudem'."
+        )
 
-    nx, ny = x + dr, y + dc
 
-    # Deteksi 2-cell loop: cek apakah tetangga mengarah balik ke kita
-    if   fd == 1:   opp = 16
-    elif fd == 2:   opp = 32
-    elif fd == 4:   opp = 64
-    elif fd == 8:   opp = 128
-    elif fd == 16:  opp = 1
-    elif fd == 32:  opp = 2
-    elif fd == 64:  opp = 4
-    elif fd == 128: opp = 8
-    else:           opp = 0
-
+def _step(flow_dir, i, j, DR, DC):
+    """Satu langkah flow tracing. Return (ni, nj) atau None jika tidak valid."""
+    fd = int(flow_dir[i, j])
+    if fd not in DR:
+        return None
+    ni = i + DR[fd]
+    nj = j + DC[fd]
     rows, cols = flow_dir.shape
-    if (0 <= nx < rows and 0 <= ny < cols and
-            opp > 0 and int(flow_dir[nx, ny]) == opp):
-        return np.nan, np.nan, np.nan   # 2-cell loop terdeteksi
-
-    return float(nx), float(ny), Ld + df * cellsize
+    if ni < 0 or ni >= rows or nj < 0 or nj >= cols:
+        return None
+    return ni, nj
 
 
 # ---------------------------------------------------------------------------
-# PART 1: satu baris — hillslope → channel terdekat
-# ---------------------------------------------------------------------------
-
-def _trace_hillslope_row(
-    i: int,
-    demcon:   np.ndarray,
-    flow_dir: np.ndarray,
-    channel:  np.ndarray,
-    a: int,
-    b: int,
-    cellsize: float,
-):
-    """
-    Trace setiap piksel non-channel di baris i ke sel channel terdekat.
-    Dipanggil secara paralel per baris oleh hillslope_to_river_mapping().
-    """
-    fila_D   = np.full(b, np.nan, dtype=np.float32)
-    fila_ROW = np.full(b, np.nan, dtype=np.float32)
-    fila_COL = np.full(b, np.nan, dtype=np.float32)
-
-    for j in range(1, b - 1):
-        if channel[i, j] or np.isnan(demcon[i, j]):
-            continue
-
-        xi, yi, Ld = i, j, 0.0
-
-        for _ in range(100_000):          # batas aman anti-infinite loop
-            if channel[xi, yi]:
-                break
-            fd = flow_dir[xi, yi]
-            if np.isnan(fd) or fd == 0:
-                xi = -1; break
-            nx, ny, Ld = trace_flow_step(flow_dir, xi, yi, Ld, cellsize)
-            if np.isnan(nx):
-                xi = -1; break
-            xi, yi = int(nx), int(ny)
-            if xi <= 0 or xi >= a-1 or yi <= 0 or yi >= b-1:
-                xi = -1; break
-
-        if xi > 0 and channel[xi, yi]:
-            fila_D[j]   = Ld
-            fila_ROW[j] = xi
-            fila_COL[j] = yi
-
-    return fila_D, fila_ROW, fila_COL
-
-
-# ---------------------------------------------------------------------------
-# PART 2: satu baris — channel → confluence berikutnya
-# ---------------------------------------------------------------------------
-
-def _trace_confluence_row(
-    i: int,
-    flow_dir:  np.ndarray,
-    channel:   np.ndarray,
-    S_matrix:  np.ndarray,
-    max_order: int,
-    a: int,
-    b: int,
-    cellsize:  float,
-):
-    """
-    Trace setiap piksel channel di baris i ke confluence berikutnya
-    (titik perubahan Strahler order).
-    Dipanggil secara paralel per baris oleh river_to_confluence_mapping().
-    """
-    fila_D   = np.full(b, np.nan, dtype=np.float32)
-    fila_ROW = np.full(b, np.nan, dtype=np.float32)
-    fila_COL = np.full(b, np.nan, dtype=np.float32)
-
-    for j in range(1, b - 1):
-        if not channel[i, j]:
-            continue
-        so = S_matrix[i, j]
-        if so == 0 or so >= max_order:      # skip: non-channel atau main river
-            continue
-
-        xi, yi, Ld = i, j, 0.0
-
-        for _ in range(200_000):
-            fd = flow_dir[xi, yi]
-            if np.isnan(fd) or fd == 0:
-                break
-            nx, ny, Ld = trace_flow_step(flow_dir, xi, yi, Ld, cellsize)
-            if np.isnan(nx):
-                break
-            nxi, nyi = int(nx), int(ny)
-            if nxi <= 0 or nxi >= a-1 or nyi <= 0 or nyi >= b-1:
-                break
-            if S_matrix[nxi, nyi] != so:    # order berubah = confluence
-                xi, yi = nxi, nyi
-                break
-            xi, yi = nxi, nyi
-
-        fila_D[j]   = Ld
-        fila_ROW[j] = xi
-        fila_COL[j] = yi
-
-    return fila_D, fila_ROW, fila_COL
-
-
-# ---------------------------------------------------------------------------
-# PUBLIC API
+# PART 1: Hillslope → channel terdekat  (dengan path caching)
+# Mengikuti logika Cell 9 & 11 notebook Manfreda
 # ---------------------------------------------------------------------------
 
 def hillslope_to_river_mapping(
     demcon:   np.ndarray,
     flow_dir: np.ndarray,
     channel:  np.ndarray,
+    flow_acc: np.ndarray,
     cellsize: float,
+    encoding: str = "esri",
     n_jobs:   int = -1,
 ):
     """
-    Part 1: Untuk setiap piksel non-channel, trace aliran ke sel channel
-    terdekat dan simpan jarak + koordinatnya.
-    Setara MATLAB: Section 3 (parfor Part 1).
+    Part 1: Untuk setiap piksel non-channel, trace flow path ke channel
+    terdekat dan simpan koordinatnya.
+
+    PATH CACHING (mengikuti notebook Manfreda Cell 9 & 11):
+      Setelah sebuah flow path ditelusuri dan channel ditemukan,
+      semua piksel di sepanjang path tersebut di-cache dengan hasil
+      yang sama. Piksel berikutnya yang melewati path yang sama
+      langsung mengambil nilai cache tanpa trace ulang.
+
+      Kompleksitas efektif: mendekati O(N) bukan O(N x L).
 
     Parameters
     ----------
-    demcon   : 2D np.ndarray — DEM terkondisi
-    flow_dir : 2D np.ndarray — Flow Direction ESRI D8
-    channel  : 2D np.ndarray bool — mask channel
-    cellsize : float         — ukuran piksel [m]
-    n_jobs   : int           — jumlah core paralel (-1 = semua)
+    demcon   : 2D float32 — DEM terkondisi
+    flow_dir : 2D float32 — Flow Direction
+    channel  : 2D bool    — mask piksel channel
+    flow_acc : 2D float32 — Flow Accumulation
+    cellsize : float      — ukuran piksel [m]
+    encoding : str        — 'esri' atau 'taudem'
+    n_jobs   : int        — tidak digunakan (untuk kompatibilitas API)
 
     Returns
     -------
-    D_to_channel : 2D float32 — jarak ke channel terdekat [m]
-    ROW_channel  : 2D float32 — baris channel terdekat
-    COL_channel  : 2D float32 — kolom channel terdekat
+    ROW_channel : 2D float32 — baris channel terdekat (NaN = tidak terpetakan)
+    COL_channel : 2D float32 — kolom channel terdekat (NaN = tidak terpetakan)
     """
-    print("Part 1: Hillslope → channel terdekat...")
-    t0   = time.time()
-    a, b = demcon.shape
+    print(f"Part 1: Hillslope → channel terdekat  "
+          f"[encoding={encoding}, path caching=ON]...")
+    t0 = time.time()
 
-    results = Parallel(n_jobs=n_jobs, backend="loky", verbose=0)(
-        delayed(_trace_hillslope_row)(i, demcon, flow_dir, channel, a, b, cellsize)
-        for i in range(1, a - 1)
-    )
+    DR, DC     = _get_lookup(encoding)
+    rows, cols = demcon.shape
+    nodata     = np.isnan(demcon) | (flow_dir <= 0) | np.isnan(flow_dir)
 
-    D_rows, R_rows, C_rows = zip(*results)
-    nan_row      = np.full(b, np.nan, dtype=np.float32)
-    D_to_channel = np.vstack([nan_row, *D_rows, nan_row])
-    ROW_channel  = np.vstack([nan_row, *R_rows, nan_row])
-    COL_channel  = np.vstack([nan_row, *C_rows, nan_row])
+    # Cache: -1 = belum dikunjungi, -2 = tidak ada channel downstream
+    # nilai >= 0 = row/col channel yang valid
+    ROW_cache = np.full((rows, cols), -1, dtype=np.int32)
+    COL_cache = np.full((rows, cols), -1, dtype=np.int32)
 
-    n_mapped = int(~np.isnan(ROW_channel).sum())
-    print(f"  Selesai dalam {time.time()-t0:.1f}s  |  {n_mapped:,} piksel terpetakan")
-    return D_to_channel, ROW_channel, COL_channel
+    # Inisialisasi: piksel channel menunjuk ke dirinya sendiri
+    r_ch, c_ch = np.where(channel)
+    ROW_cache[r_ch, c_ch] = r_ch.astype(np.int32)
+    COL_cache[r_ch, c_ch] = c_ch.astype(np.int32)
 
+    ROW_channel = np.full((rows, cols), np.nan, dtype=np.float32)
+    COL_channel = np.full((rows, cols), np.nan, dtype=np.float32)
+    ROW_channel[r_ch, c_ch] = r_ch.astype(np.float32)
+    COL_channel[r_ch, c_ch] = c_ch.astype(np.float32)
+
+    visited_in_path = set()
+
+    for i in range(rows):
+        for j in range(cols):
+            if channel[i, j] or nodata[i, j]:
+                continue
+
+            # Sudah di cache → langsung pakai
+            cv = ROW_cache[i, j]
+            if cv >= 0:
+                ROW_channel[i, j] = cv
+                COL_channel[i, j] = COL_cache[i, j]
+                continue
+            if cv == -2:
+                continue
+
+            # Trace flow path, kumpulkan semua piksel yang dilalui
+            path = []
+            a, b = i, j
+            visited_in_path.clear()
+            result = None   # (rc, cc) jika channel ditemukan
+
+            while True:
+                cv = ROW_cache[a, b]
+
+                if cv >= 0:
+                    # Ketemu cache valid
+                    result = (cv, COL_cache[a, b])
+                    break
+
+                if cv == -2:
+                    # Ketemu cache tidak valid
+                    break
+
+                if (a, b) in visited_in_path:
+                    # Loop terdeteksi
+                    break
+
+                path.append((a, b))
+                visited_in_path.add((a, b))
+
+                nxt = _step(flow_dir, a, b, DR, DC)
+                if nxt is None or nodata[nxt[0], nxt[1]]:
+                    break
+
+                a, b = nxt[0], nxt[1]
+
+            # Isi cache untuk semua piksel di path
+            if result is not None:
+                rc, cc = result
+                for (pi, pj) in path:
+                    ROW_cache[pi, pj]   = rc
+                    COL_cache[pi, pj]   = cc
+                    ROW_channel[pi, pj] = float(rc)
+                    COL_channel[pi, pj] = float(cc)
+            else:
+                for (pi, pj) in path:
+                    ROW_cache[pi, pj] = -2
+
+    n_hill   = int((~channel & ~nodata).sum())
+    n_mapped = int(np.sum(~np.isnan(ROW_channel) & ~channel))
+    pct      = 100.0 * n_mapped / max(n_hill, 1)
+    print(f"  Selesai dalam {time.time()-t0:.1f}s")
+    print(f"  Terpetakan: {n_mapped:,} / {n_hill:,} piksel hillslope ({pct:.1f}%)")
+    return ROW_channel, COL_channel
+
+
+# ---------------------------------------------------------------------------
+# PART 2: Channel → confluence berikutnya  (dengan path caching)
+# ---------------------------------------------------------------------------
 
 def river_to_confluence_mapping(
     flow_dir:  np.ndarray,
@@ -238,45 +198,108 @@ def river_to_confluence_mapping(
     S_matrix:  np.ndarray,
     max_order: int,
     cellsize:  float,
+    encoding:  str = "esri",
     n_jobs:    int = -1,
 ):
     """
     Part 2: Untuk setiap piksel channel non-main-river, trace ke confluence
-    berikutnya (titik di mana Strahler order berubah).
-    Setara MATLAB: Section 4 (parfor Part 2).
+    berikutnya — titik di mana Strahler order berubah (naik).
+
+    Juga menggunakan path caching: segmen upstream yang melewati jalur
+    yang sama tidak perlu trace ulang.
 
     Parameters
     ----------
-    flow_dir  : 2D np.ndarray — Flow Direction ESRI D8
-    channel   : 2D np.ndarray bool — mask channel
-    S_matrix  : 2D np.ndarray int  — Strahler order
-    max_order : int               — order maksimum (main river)
-    cellsize  : float             — ukuran piksel [m]
-    n_jobs    : int               — jumlah core paralel (-1 = semua)
+    flow_dir  : 2D float32 — Flow Direction
+    channel   : 2D bool    — mask piksel channel
+    S_matrix  : 2D int32   — Strahler order
+    max_order : int        — order maksimum (main river, tidak di-trace)
+    cellsize  : float      — ukuran piksel [m]
+    encoding  : str        — 'esri' atau 'taudem'
+    n_jobs    : int        — tidak digunakan
 
     Returns
     -------
-    D_to_confluence : 2D float32 — jarak ke confluence [m]
-    ROW_confluence  : 2D float32 — baris confluence
-    COL_confluence  : 2D float32 — kolom confluence
+    ROW_confluence : 2D float32 — baris confluence terdekat
+    COL_confluence : 2D float32 — kolom confluence terdekat
     """
-    print("Part 2: Channel → confluence berikutnya...")
-    t0   = time.time()
-    a, b = flow_dir.shape
+    print(f"Part 2: Channel → confluence berikutnya  "
+          f"[encoding={encoding}, path caching=ON]...")
+    t0 = time.time()
 
-    results = Parallel(n_jobs=n_jobs, backend="loky", verbose=0)(
-        delayed(_trace_confluence_row)(
-            i, flow_dir, channel, S_matrix, max_order, a, b, cellsize
-        )
-        for i in range(1, a - 1)
-    )
+    DR, DC     = _get_lookup(encoding)
+    rows, cols = flow_dir.shape
 
-    D_rows, R_rows, C_rows = zip(*results)
-    nan_row         = np.full(b, np.nan, dtype=np.float32)
-    D_to_confluence = np.vstack([nan_row, *D_rows, nan_row])
-    ROW_confluence  = np.vstack([nan_row, *R_rows, nan_row])
-    COL_confluence  = np.vstack([nan_row, *C_rows, nan_row])
+    ROW_conf_cache = np.full((rows, cols), -1, dtype=np.int32)
+    COL_conf_cache = np.full((rows, cols), -1, dtype=np.int32)
 
-    n_mapped = int(~np.isnan(ROW_confluence).sum())
-    print(f"  Selesai dalam {time.time()-t0:.1f}s  |  {n_mapped:,} segmen terpetakan")
-    return D_to_confluence, ROW_confluence, COL_confluence
+    ROW_confluence = np.full((rows, cols), np.nan, dtype=np.float32)
+    COL_confluence = np.full((rows, cols), np.nan, dtype=np.float32)
+
+    visited_in_path = set()
+
+    for i in range(rows):
+        for j in range(cols):
+            if not channel[i, j]:
+                continue
+            so = S_matrix[i, j]
+            if so == 0 or so >= max_order:
+                continue
+
+            # Sudah di cache?
+            cv = ROW_conf_cache[i, j]
+            if cv >= 0:
+                ROW_confluence[i, j] = cv
+                COL_confluence[i, j] = COL_conf_cache[i, j]
+                continue
+            if cv == -2:
+                continue
+
+            path = []
+            a, b = i, j
+            visited_in_path.clear()
+            result = None
+
+            while True:
+                cv = ROW_conf_cache[a, b]
+                if cv >= 0:
+                    result = (cv, COL_conf_cache[a, b])
+                    break
+                if cv == -2:
+                    break
+                if (a, b) in visited_in_path:
+                    break
+
+                path.append((a, b))
+                visited_in_path.add((a, b))
+
+                nxt = _step(flow_dir, a, b, DR, DC)
+                if nxt is None:
+                    break
+
+                ni, nj = nxt
+
+                # Order berubah → ini confluence
+                if S_matrix[ni, nj] != so:
+                    result = (ni, nj)
+                    break
+
+                a, b = ni, nj
+
+            if result is not None:
+                rc, cc = result
+                for (pi, pj) in path:
+                    ROW_conf_cache[pi, pj] = rc
+                    COL_conf_cache[pi, pj] = cc
+                    ROW_confluence[pi, pj]  = float(rc)
+                    COL_confluence[pi, pj]  = float(cc)
+            else:
+                for (pi, pj) in path:
+                    ROW_conf_cache[pi, pj] = -2
+
+    n_target = int(((S_matrix > 0) & (S_matrix < max_order)).sum())
+    n_mapped = int(np.sum(~np.isnan(ROW_confluence) & channel))
+    pct      = 100.0 * n_mapped / max(n_target, 1)
+    print(f"  Selesai dalam {time.time()-t0:.1f}s")
+    print(f"  Terpetakan: {n_mapped:,} / {n_target:,} segmen channel ({pct:.1f}%)")
+    return ROW_confluence, COL_confluence
