@@ -207,6 +207,7 @@ def compute_gfi_v2(
                                    - dem_river_net.ravel()[chan_lin])
 
     Ariver_v2[channel] = Ariver_net[channel]
+    H_v2[channel]      = 0.001   # piksel channel: H = 0 → clip ke 0.001
     H_v2[H_v2 <= 0]   = 0.001
 
     hr_v2  = ((Ariver_v2 * cellsize**2) / 1e6) ** n
