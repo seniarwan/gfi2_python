@@ -8,7 +8,7 @@ Fungsi utama: run_gfi2()
 import numpy as np
 import os
 
-from .io        import resample_to_ref, save_tif
+from .io        import resample_to_ref, save_tif, get_cellsize_meters
 from .preprocess import preprocess_dem_auto, preprocess_dem_manual
 from .network   import extract_channel_network
 from .tracing   import hillslope_to_river_mapping, river_to_confluence_mapping
@@ -38,7 +38,7 @@ def run_gfi2(
     flood_depth_path:  str   = "Tiranti T = 200.tif",
 
     # ── Parameter ─────────────────────────────────────────────────────────
-    channel_threshold: float = 1e5,
+    channel_threshold: int   = 1000,
     n_exponent:        float = 0.354429752,
     roc_step:          float = 0.005,
     max_iter:          int   = 6,
@@ -70,8 +70,12 @@ def run_gfi2(
     flood_depth_path : str
         Peta kedalaman banjir simulasi [m]. Digunakan untuk validasi WD.
 
-    channel_threshold : float
-        Threshold geomorfik Giannoni et al. (2005). Turunkan untuk DAS kecil.
+    channel_threshold : int
+        Jumlah sel upstream minimum agar piksel dianggap channel.
+        Panduan: DAS kecil (<100 km²) → 200–500,
+                 DAS sedang (100–1000 km²) → 500–2000,
+                 DAS besar (>1000 km²) → 2000–10000.
+        Estimasi cepat: threshold ≈ area_min_km2 × 1e6 / cellsize²
 
     n_exponent : float
         Eksponen scaling Leopold & Maddock (1953). Default 0.354429752.
