@@ -143,8 +143,18 @@ def get_cellsize_meters(profile: dict) -> float:
         return cellsize_m
 
     else:
-        unit = (crs_obj.axis_info[0].unit_name
-                if crs_obj.axis_info else "unknown")
+        # Cek unit CRS projected menggunakan linear_units (atribut rasterio.crs.CRS)
+        # Fallback ke pemeriksaan WKT jika linear_units tidak tersedia
+        try:
+            unit = crs_obj.linear_units   # 'metre', 'US survey foot', dll
+        except Exception:
+            unit = "unknown"
+
+        if unit == "unknown":
+            # Fallback: periksa WKT string
+            wkt = crs_obj.to_wkt() if hasattr(crs_obj, "to_wkt") else str(crs_obj)
+            unit = "foot" if "foot" in wkt.lower() or "feet" in wkt.lower() else "metre"
+
         if "foot" in unit.lower() or "feet" in unit.lower():
             raise ValueError(
                 f"Unit CRS adalah '{unit}' (kaki/feet).\n"
