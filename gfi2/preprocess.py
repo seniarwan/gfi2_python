@@ -12,7 +12,7 @@ Flow direction encoding yang digunakan di seluruh paket ini: ESRI D8
 """
 
 import numpy as np
-from .io import load_tif, check_alignment
+from .io import load_tif, check_alignment, get_cellsize_meters
 
 # Nilai D8 yang valid dalam encoding ESRI
 _ESRI_D8_VALUES = {1, 2, 4, 8, 16, 32, 64, 128}
@@ -52,7 +52,7 @@ def preprocess_dem_auto(dem_path: str):
 
     print("[MODE A] Memuat dan mengkondisi DEM dengan pysheds...")
     demvoid, profile = load_tif(dem_path)
-    cellsize         = abs(profile["transform"].a)
+    cellsize         = get_cellsize_meters(profile)
 
     grid    = Grid.from_raster(dem_path)
     dem_raw = grid.read_raster(dem_path)
@@ -118,7 +118,7 @@ def preprocess_dem_manual(
     demcon,   _       = load_tif(demcon_path)
     flow_dir, _       = load_tif(flowdir_path)
     flow_acc, _       = load_tif(flowacc_path)
-    cellsize          = abs(profile["transform"].a)
+    cellsize          = get_cellsize_meters(profile)
 
     # ── Validasi 1: semua raster harus sejajar ───────────────────────────
     check_alignment({
