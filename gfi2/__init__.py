@@ -3,7 +3,7 @@
 # Original MATLAB: Saavedra Navarro et al., DOI: 10.5281/zenodo.18903835
 # =============================================================================
 
-from .io       import load_tif, save_tif, resample_to_ref, check_alignment
+from .io       import load_tif, save_tif, resample_to_ref, check_alignment, get_cellsize_meters
 from .preprocess import preprocess_dem_auto, preprocess_dem_manual, convert_taudem_to_esri
 from .network  import gradient8, compute_strahler_order, extract_channel_network
 from .tracing  import hillslope_to_river_mapping, river_to_confluence_mapping
@@ -22,7 +22,7 @@ __doi__     = "10.5281/zenodo.18903835"
 
 __all__ = [
     # io
-    "load_tif", "save_tif", "resample_to_ref", "check_alignment",
+    "load_tif", "save_tif", "resample_to_ref", "check_alignment", "get_cellsize_meters",
     # preprocess
     "preprocess_dem_auto", "preprocess_dem_manual", "convert_taudem_to_esri",
     # network
