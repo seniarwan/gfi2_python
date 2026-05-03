@@ -123,3 +123,80 @@ def check_alignment(arrays_dict: dict) -> None:
             "Gunakan resample_to_ref() atau sejajarkan di GIS terlebih dahulu."
         )
     print(f"  Semua raster sejajar: {list(unique)[0]}")
+
+
+# ---------------------------------------------------------------------------
+def get_cellsize_meters(profile: dict) -> float:
+    """
+    Ekstrak ukuran piksel dalam satuan METER dari rasterio profile.
+
+    Menangani dua kasus:
+      - CRS proyeksi (UTM, dll.) → cellsize langsung dari transform [m]
+      - CRS geografis (WGS84 derajat) → konversi derajat → meter
+        menggunakan aproksimasi: 1° lintang ≈ 111,320 m
+        (akurat ~0.1% untuk lintang 0°–60°)
+
+    Parameters
+    ----------
+    profile : dict — rasterio profile (hasil load_tif)
+
+    Returns
+    -------
+    cellsize_m : float — ukuran piksel dalam meter
+
+    Raises
+    ------
+    ValueError — jika CRS tidak dikenali dan tidak bisa dikonversi
+    """
+    from rasterio.crs import CRS
+
+    raw_cs = abs(profile["transform"].a)   # ukuran piksel mentah
+    crs    = profile.get("crs")
+
+    if crs is None:
+        # Tidak ada CRS → asumsikan sudah meter, beri peringatan
+        print(
+            "  PERINGATAN: DEM tidak memiliki informasi CRS.\n"
+            f"  Cellsize mentah {raw_cs:.6f} diasumsikan dalam meter.\n"
+            "  Jika unit sebenarnya bukan meter, hasil GFI tidak valid."
+        )
+        return raw_cs
+
+    crs_obj = CRS.from_user_input(crs)
+
+    if crs_obj.is_geographic:
+        # Unit: derajat → konversi ke meter
+        # Ambil lintang tengah dari transform untuk koreksi
+        transform  = profile["transform"]
+        center_lat = transform.f + (profile["height"] / 2) * transform.e
+        center_lat = abs(center_lat)
+
+        # Faktor konversi derajat → meter
+        # 1° lintang  ≈ 111,320 m  (hampir konstan)
+        # 1° bujur    ≈ 111,320 * cos(lat) m
+        import math
+        m_per_deg_lat = 111_320.0
+        m_per_deg_lon = 111_320.0 * math.cos(math.radians(center_lat))
+
+        # Untuk piksel persegi dalam derajat, gunakan rata-rata lat & lon
+        cellsize_m = raw_cs * (m_per_deg_lat + m_per_deg_lon) / 2.0
+
+        print(
+            f"  CRS geografis terdeteksi (unit: derajat).\n"
+            f"  Lintang tengah: {center_lat:.2f}°\n"
+            f"  Cellsize: {raw_cs:.6f}° → {cellsize_m:.2f} m (aproksimasi)\n"
+            f"  REKOMENDASI: Proyeksikan DEM ke UTM untuk akurasi maksimal."
+        )
+        return cellsize_m
+
+    else:
+        # CRS proyeksi → unit sudah meter
+        unit = crs_obj.axis_info[0].unit_name if crs_obj.axis_info else "unknown"
+        if "metre" in unit.lower() or "meter" in unit.lower() or unit == "unknown":
+            return raw_cs
+        else:
+            raise ValueError(
+                f"Unit CRS tidak dikenal: '{unit}'.\n"
+                "Hanya meter dan derajat yang didukung.\n"
+                "Proyeksikan DEM ke UTM terlebih dahulu."
+            )
